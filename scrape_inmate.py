@@ -13,7 +13,7 @@ parser.add_argument('-f', '--force-update', default=False, action='store_true', 
 args = parser.parse_args()
 
 
-create_db = """
+create_inmate_information_table = """
 create table inmate_information(
     page_text text,
     page_text_timestamp timestamp,
@@ -24,8 +24,22 @@ create table inmate_information(
     dob date,
     release_date date
 )
-
 """
+create_bail_information_table = """
+create table inmate_information_bail
+  inmate_id character varying(30),
+  booking_number character varying(20),
+  case_number character varying(20),
+  amount double precision,
+  percent character varying(20),
+  additional double precision,
+  total double precision,
+  bond_type character varying(50),
+  status character varying(100),
+  posted_by character varying(100),
+  post_date date
+"""
+
 
 def get_inmate(booking_number, requests_session):
 
@@ -152,45 +166,51 @@ def save_inmate_page(sysid, inmate_id, booking_number, requests_session):
     cursor_gis.execute('insert into inmate_information (inmate_id, booking_number, sysid, page_text_timestamp, page_text) values (%s, %s, %s, %s, %s)', (inmate_id, booking_number, sysid, datetime.now(), page.text) )
 
 
-conn_string_gis = "host='localhost' dbname='gis' user='chris' password='chris'"
-conn_gis = connect(conn_string_gis)
-conn_gis.autocommit = True
-cursor_gis = conn_gis.cursor()
+def fetch_bookings():
+    with requests.Session() as requests_session:
+        for booking_number in range(args.start,args.start+args.limit):
+            cursor_gis.execute("select sysid, inmate_id from inmate_information where booking_number = '%s' and sysid != ''", (booking_number,))
+            print('Booking Number: {}'.format(booking_number,))
+            if cursor_gis.rowcount == 0:
+                print('Fetching initial details...')
+                data = get_inmate(booking_number, requests_session)
+                if data is None:
+                    cursor_gis.execute("INSERT INTO inmate_information (booking_number, does_not_exist) VALUES ('%s', True)", (booking_number,))
+                    continue
+            else:
+                print('Already have booking_number and sysid in the db.')
+                result = cursor_gis.fetchone()
+            #    print(result)
+                data = {}
+                data['sysid'] = result[0]
+                data['permanent_id'] = result[1]
+                data['booking_number'] = booking_number
+            cursor_gis.execute("select count(*) from inmate_information where booking_number = '%s' and page_text_timestamp is null ", (booking_number,))
+            result = cursor_gis.fetchone()[0]
+            if result == 0:
+                print('Saving booking details page...')
+                save_inmate_page(data['sysid'], data['permanent_id'], data['booking_number'], requests_session)
+            else:
+                print('Already having booking details saved.')
+            cursor_gis.execute("select count(*) from inmate_information where booking_number = '%s' and dob is not null", (booking_number,))
+            result = cursor_gis.fetchone()[0]
+            if result == 0:
+                print('Extracting details...')
+                extract_inmate_details(booking_number)
+            elif args.force_update:
+                print('Already have analysis in db - FORCE UPDATING.')
+            else:
+                print('Already have analysis in db, skipping.')
 
-with requests.Session() as requests_session:
-    for booking_number in range(args.start,args.start+args.limit):
-        cursor_gis.execute("select sysid, inmate_id from inmate_information where booking_number = '%s' and sysid != ''", (booking_number,))
-        print('Booking Number: {}'.format(booking_number,))
-        if cursor_gis.rowcount == 0:
-            print('Fetching initial details...')
-            data = get_inmate(booking_number, requests_session)
-            if data is None:
-                cursor_gis.execute("INSERT INTO inmate_information (booking_number, does_not_exist) VALUES ('%s', True)", (booking_number,))
-                continue
-        else:
-            print('Already have booking_number and sysid in the db.')
-            result = cursor_gis.fetchone()
-        #    print(result)
-            data = {}
-            data['sysid'] = result[0]
-            data['permanent_id'] = result[1]
-            data['booking_number'] = booking_number
-        cursor_gis.execute("select count(*) from inmate_information where booking_number = '%s' and page_text_timestamp is null ", (booking_number,))
-        result = cursor_gis.fetchone()[0]
-        if result == 0:
-            print('Saving booking details page...')
-            save_inmate_page(data['sysid'], data['permanent_id'], data['booking_number'], requests_session)
-        else:
-            print('Already having booking details saved.')
-        cursor_gis.execute("select count(*) from inmate_information where booking_number = '%s' and dob is not null", (booking_number,))
-        result = cursor_gis.fetchone()[0]
-        if result == 0:
-            print('Extracting details...')
-            extract_inmate_details(booking_number)
-        elif args.force_update:
-            print('Already have analysis in db - FORCE UPDATING.')
-        else:
-            print('Already have analysis in db, skipping.')
 
-cursor_gis.close()
-conn_gis.close()
+
+if __name__ == '__main__':
+    # Test if tables exist, create if they don't
+    #
+    conn_string_gis = "host='localhost' dbname='gis' user='chris' password='chris'"
+    conn_gis = connect(conn_string_gis)
+    conn_gis.autocommit = True
+    cursor_gis = conn_gis.cursor()
+    fetch_bookings()
+    cursor_gis.close()
+    conn_gis.close()
